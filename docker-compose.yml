@@ -1,0 +1,67 @@
+# Metabase Self-Service Analytics
+# Port 3030 agar tidak bentrok dengan stack utama.
+# Data analytics: MySQL DB webappskuliah, tabel berprefix metabase_
+# Metadata aplikasi Metabase: H2 di volume (supaya tidak polusi DB shared)
+
+services:
+  metabase:
+    image: metabase/metabase:v0.50.26
+    container_name: metabase-analytics
+    restart: unless-stopped
+    ports:
+      - "3030:3000"
+    environment:
+      JAVA_TIMEZONE: Asia/Jakarta
+      MB_DB_FILE: /metabase-data/metabase.db
+    volumes:
+      - metabase-data:/metabase-data
+    networks:
+      - core_apps
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 90s
+
+  # Import CSV ke webappskuliah.metabase_customers:
+  #   docker compose --profile import run --rm importer
+  importer:
+    image: python:3.11-slim
+    container_name: metabase-data-importer
+    profiles: ["import"]
+    working_dir: /work
+    environment:
+      MYSQL_HOST: ${MYSQL_HOST:-mysql-server}
+      MYSQL_USER: ${MYSQL_USER:-webappskuliah}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-webappskuliah}
+      MYSQL_PWD: ${MYSQL_PASSWORD:-webappskuliah}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-webappskuliah}
+      TABLE_PREFIX: ${TABLE_PREFIX:-metabase}
+      CSV_PATH: /work/data/telco_customer_churn.csv
+    volumes:
+      - ./data:/work/data:ro
+      - ./sql:/work/sql:ro
+      - ./scripts:/work/scripts:ro
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -e
+        apt-get update -qq && apt-get install -y -qq default-mysql-client >/dev/null
+        pip install --quiet PyMySQL
+        echo "==> Siapkan tabel di DB webappskuliah..."
+        mysql -h"$$MYSQL_HOST" -u"$$MYSQL_USER" < /work/sql/01_create_databases.sql
+        mysql -h"$$MYSQL_HOST" -u"$$MYSQL_USER" < /work/sql/02_create_table.sql
+        echo "==> Import CSV..."
+        python /work/scripts/import_data.py
+        echo "==> Selesai."
+    networks:
+      - core_apps
+
+networks:
+  core_apps:
+    external: true
+    name: ${DOCKER_NETWORK:-docker_default}
+
+volumes:
+  metabase-data:
